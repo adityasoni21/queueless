@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import LiveIndicator from "@/components/ui/LiveIndicator";
 
@@ -16,27 +16,27 @@ interface Token {
   token_number: string;
   status: string;
   created_at: string;
+  called_at: string | null;
   service_started_at: string | null;
   arrived_at: string | null;
-  services: {
-    name: string;
-  } | null;
+  services: { name: string } | null;
 }
 
 interface Props {
   counter: Counter;
 }
 
-export default function StaffQueue({
-  counter,
-}: Props) {
-  const supabase = createClient();
+const NO_SHOW_SECONDS = 5 * 60;
 
+export default function StaffQueue({ counter }: Props) {
+  const supabase = createClient();
+  const [counterStatus, setCounterStatus] = useState(counter.status);
   const [tokens, setTokens] = useState<Token[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [now, setNow] = useState(() => Date.now());
 
-  async function loadQueue() {
+  const loadQueue = async () => {
     const { data, error } = await supabase
       .from("tokens")
       .select(`
@@ -44,21 +44,14 @@ export default function StaffQueue({
         token_number,
         status,
         created_at,
+        called_at,
         service_started_at,
         arrived_at,
-        services (
-          name
-        )
+        services (name)
       `)
       .eq("counter_id", counter.id)
-      .in("status", [
-        "WAITING",
-        "CALLED",
-        "IN_SERVICE",
-      ])
-      .order("created_at", {
-        ascending: true,
-      });
+      .in("status", ["WAITING", "CALLED", "IN_SERVICE"])
+      .order("created_at", { ascending: true });
 
     if (error) {
       setError(error.message);
@@ -66,7 +59,7 @@ export default function StaffQueue({
     }
 
     setTokens((data as Token[]) ?? []);
-  }
+  };
 
   useEffect(() => {
     loadQueue();
@@ -81,8 +74,19 @@ export default function StaffQueue({
           table: "tokens",
           filter: `counter_id=eq.${counter.id}`,
         },
-        () => {
-          loadQueue();
+        () => loadQueue()
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "counters",
+          filter: `id=eq.${counter.id}`,
+        },
+        (payload) => {
+          const status = (payload.new as { status?: Counter["status"] })?.status;
+          if (status) setCounterStatus(status);
         }
       )
       .subscribe();
@@ -90,157 +94,137 @@ export default function StaffQueue({
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [counter.id]);
+  }, [counter.id, supabase]);
 
-  async function openCounter() {
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // Keep the no-show rule active while staff has the dashboard open.
+  useEffect(() => {
+    if (counterStatus !== "OPEN") return;
+
+    const expireNoShows = async () => {
+      const { error } = await supabase.rpc("expire_no_show_tokens", {
+        p_counter_id: counter.id,
+      });
+
+      if (!error) await loadQueue();
+    };
+
+    expireNoShows();
+    const timer = window.setInterval(expireNoShows, 15000);
+    return () => window.clearInterval(timer);
+  }, [counter.id, counterStatus, supabase]);
+
+  async function runAction(action: () => Promise<{ error: any }>) {
     setLoading(true);
     setError("");
 
-    const { error } = await supabase.rpc(
-      "open_counter",
-      {
-        p_counter_id: counter.id,
-      }
-    );
-
-    if (error) {
-      setError(error.message);
-    }
+    const { error } = await action();
+    if (error) setError(error.message);
 
     await loadQueue();
     setLoading(false);
+  }
+
+  async function openCounter() {
+    await runAction(async () => {
+      const result = await supabase.rpc("open_counter", {
+        p_counter_id: counter.id,
+      });
+      if (!result.error) setCounterStatus("OPEN");
+      return result;
+    });
   }
 
   async function closeCounter() {
-    setLoading(true);
-    setError("");
-
-    const { error } = await supabase.rpc(
-      "close_counter",
-      {
+    await runAction(async () => {
+      const result = await supabase.rpc("close_counter", {
         p_counter_id: counter.id,
         p_reason: "Closed by staff",
-      }
-    );
-
-    if (error) {
-      setError(error.message);
-    }
-
-    await loadQueue();
-    setLoading(false);
+      });
+      if (!result.error) setCounterStatus("CLOSED");
+      return result;
+    });
   }
 
   async function callNext() {
-    setLoading(true);
-    setError("");
-
-    const { error } = await supabase.rpc(
-      "call_next_token",
-      {
+    await runAction(() =>
+      supabase.rpc("call_next_token", {
         p_counter_id: counter.id,
-      }
+      })
     );
-
-    if (error) {
-      setError(error.message);
-    }
-
-    await loadQueue();
-    setLoading(false);
   }
 
   async function startService(tokenId: string) {
-    setLoading(true);
-    setError("");
-
-    const { error } = await supabase.rpc(
-      "start_token_service",
-      {
+    await runAction(() =>
+      supabase.rpc("start_token_service", {
         p_token_id: tokenId,
-      }
+      })
     );
-
-    if (error) {
-      setError(error.message);
-    }
-
-    await loadQueue();
-    setLoading(false);
   }
 
   async function completeToken(tokenId: string) {
-    setLoading(true);
-    setError("");
-
-    const { error } = await supabase.rpc(
-      "complete_token",
-      {
+    await runAction(() =>
+      supabase.rpc("complete_token", {
         p_token_id: tokenId,
-      }
+      })
     );
-
-    if (error) {
-      setError(error.message);
-    }
-
-    await loadQueue();
-    setLoading(false);
   }
 
   async function skipToken(tokenId: string) {
-    setLoading(true);
-    setError("");
-
-    const { error } = await supabase.rpc(
-      "skip_token",
-      {
+    await runAction(() =>
+      supabase.rpc("skip_token", {
         p_token_id: tokenId,
-      }
+      })
     );
-
-    if (error) {
-      setError(error.message);
-    }
-
-    await loadQueue();
-    setLoading(false);
   }
 
-  const currentToken = tokens.find(
-    (token) =>
-      token.status === "CALLED" ||
-      token.status === "IN_SERVICE"
+  const currentToken = useMemo(
+    () => tokens.find((token) => ["CALLED", "IN_SERVICE"].includes(token.status)),
+    [tokens]
   );
 
-  const waitingTokens = tokens.filter(
-    (token) => token.status === "WAITING"
+  const waitingTokens = useMemo(
+    () => tokens.filter((token) => token.status === "WAITING"),
+    [tokens]
   );
+
+  const calledElapsedSeconds = currentToken?.called_at
+    ? Math.max(0, Math.floor((now - new Date(currentToken.called_at).getTime()) / 1000))
+    : 0;
+
+  const remainingNoShowSeconds = Math.max(
+    0,
+    NO_SHOW_SECONDS - calledElapsedSeconds
+  );
+
+  const elapsedLabel = formatDuration(calledElapsedSeconds);
+  const noShowLabel = formatDuration(remainingNoShowSeconds);
+  const hasTimedOut =
+    currentToken?.status === "CALLED" && remainingNoShowSeconds === 0;
 
   return (
     <div className="overflow-hidden rounded-3xl border bg-white shadow-sm">
       <div className="border-b p-6">
-        <div className="flex items-start justify-between">
+        <div className="flex items-start justify-between gap-4">
           <div>
-            <h3 className="text-xl font-bold">
-              {counter.name}
-            </h3>
-
-            <p className="mt-1 text-sm text-slate-500">
-              {counter.location}
-            </p>
+            <h3 className="text-xl font-bold">{counter.name}</h3>
+            <p className="mt-1 text-sm text-slate-500">{counter.location}</p>
           </div>
 
           <span
             className={`rounded-full px-3 py-1 text-xs font-semibold ${
-              counter.status === "OPEN"
+              counterStatus === "OPEN"
                 ? "bg-green-50 text-green-700"
-                : counter.status === "PAUSED"
+                : counterStatus === "PAUSED"
                   ? "bg-yellow-50 text-yellow-700"
                   : "bg-slate-100 text-slate-500"
             }`}
           >
-            {counter.status}
+            {counterStatus}
           </span>
         </div>
       </div>
@@ -248,66 +232,87 @@ export default function StaffQueue({
       <div className="p-6">
         {currentToken ? (
           <div>
-            <p className="text-sm font-medium text-slate-500">
-              NOW SERVING
-            </p>
-            <LiveIndicator />
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium text-slate-500">NOW SERVING</p>
+              <LiveIndicator />
+            </div>
 
             <p className="mt-2 text-6xl font-black tracking-tight">
               {currentToken.token_number}
             </p>
 
-            <p className="mt-2 font-medium">
-              {currentToken.services?.name}
-            </p>
+            <p className="mt-2 font-medium">{currentToken.services?.name}</p>
 
-            <div className="mt-6 flex gap-3">
+            {currentToken.status === "CALLED" && (
+              <div
+                className={`mt-5 rounded-2xl p-4 ${
+                  currentToken.arrived_at
+                    ? "bg-green-50 text-green-800"
+                    : hasTimedOut
+                      ? "bg-red-50 text-red-800"
+                      : "bg-yellow-50 text-yellow-800"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="font-semibold">
+                      {currentToken.arrived_at
+                        ? "Student has checked in"
+                        : hasTimedOut
+                          ? "No-show threshold reached"
+                          : "Waiting for student arrival"}
+                    </p>
+                    <p className="mt-1 text-sm opacity-80">
+                      Called {elapsedLabel} ago
+                    </p>
+                  </div>
+
+                  <div className="text-right">
+                    <p className="text-xs font-medium uppercase tracking-wide opacity-70">
+                      {currentToken.arrived_at ? "Checked in" : "Auto-skip in"}
+                    </p>
+                    <p className="mt-1 text-2xl font-black">
+                      {currentToken.arrived_at ? "✓" : noShowLabel}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {currentToken.status === "IN_SERVICE" && (
+              <div className="mt-5 rounded-2xl bg-blue-50 p-4 text-blue-800">
+                <p className="font-semibold">Service in progress</p>
+                <p className="mt-1 text-sm opacity-80">
+                  The student is currently being served.
+                </p>
+              </div>
+            )}
+
+            <div className="mt-5 flex gap-3">
               {currentToken.status === "CALLED" && (
                 <button
-                  onClick={() =>
-                    startService(currentToken.id)
-                  }
-                  disabled={
-                    loading ||
-                    !currentToken.arrived_at
-                  }
-                  className="flex-1 rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white disabled:opacity-40"
+                  onClick={() => startService(currentToken.id)}
+                  disabled={loading || !currentToken.arrived_at || hasTimedOut}
+                  className="flex-1 rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {currentToken.arrived_at
-                    ? "Start Service"
-                    : "Waiting for Arrival"
-                  }
+                  {currentToken.arrived_at ? "Start Service" : "Waiting for Arrival"}
                 </button>
               )}
 
-              {currentToken.arrived_at ? (
-                  <div className="mt-4 rounded-xl bg-green-50 p-3 text-sm text-green-700">
-                    ✓ Student has checked in
-                  </div>
-                ) : (
-                  <div className="mt-4 rounded-xl bg-yellow-50 p-3 text-sm text-yellow-700">
-                    Waiting for student to arrive
-                  </div>
-                )}
-
               {currentToken.status === "IN_SERVICE" && (
                 <button
-                  onClick={() =>
-                    completeToken(currentToken.id)
-                  }
+                  onClick={() => completeToken(currentToken.id)}
                   disabled={loading}
-                  className="flex-1 rounded-xl bg-green-600 px-4 py-3 font-semibold text-white"
+                  className="flex-1 rounded-xl bg-green-600 px-4 py-3 font-semibold text-white disabled:opacity-40"
                 >
-                  Complete
+                  Complete Service
                 </button>
               )}
 
               <button
-                onClick={() =>
-                  skipToken(currentToken.id)
-                }
+                onClick={() => skipToken(currentToken.id)}
                 disabled={loading}
-                className="rounded-xl border px-4 py-3 font-semibold"
+                className="rounded-xl border px-4 py-3 font-semibold disabled:opacity-40"
               >
                 Skip
               </button>
@@ -315,27 +320,20 @@ export default function StaffQueue({
           </div>
         ) : (
           <div className="rounded-2xl bg-slate-50 p-6 text-center">
-            <p className="text-sm text-slate-500">
-              No student currently being served
-            </p>
-
-            <p className="mt-2 text-4xl font-bold">
-              —
-            </p>
+            <p className="text-sm text-slate-500">No student currently being served</p>
+            <p className="mt-2 text-4xl font-bold">—</p>
           </div>
         )}
 
         <div className="mt-8 border-t pt-6">
-          <div className="flex items-center justify-between">
-            <h4 className="font-semibold">
-              Waiting Queue
-            </h4>
-            <p className="mt-1 text-xs text-slate-400">
-            {waitingTokens.length} student
-            {waitingTokens.length === 1 ? "" : "s"} waiting
-            </p>
-
-            <span className="text-sm text-slate-500">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h4 className="font-semibold">Waiting Queue</h4>
+              <p className="mt-1 text-xs text-slate-400">
+                Tokens are ordered by arrival time.
+              </p>
+            </div>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-600">
               {waitingTokens.length} waiting
             </span>
           </div>
@@ -347,48 +345,39 @@ export default function StaffQueue({
                 className="flex items-center justify-between rounded-xl bg-slate-50 px-4 py-3"
               >
                 <div className="flex items-center gap-3">
-                  <span className="font-bold">
-                    #{index + 1}
+                  <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white text-xs font-bold text-slate-500">
+                    {index + 1}
                   </span>
-
-                  <span className="font-semibold">
-                    {token.token_number}
-                  </span>
+                  <div>
+                    <p className="font-semibold">{token.token_number}</p>
+                    <p className="text-xs text-slate-400">Waiting</p>
+                  </div>
                 </div>
-
-                <span className="text-sm text-slate-500">
-                  {token.services?.name}
-                </span>
+                <span className="text-sm text-slate-500">{token.services?.name}</span>
               </div>
             ))}
 
             {waitingTokens.length === 0 && (
-              <p className="py-4 text-center text-sm text-slate-400">
-                No students waiting
-              </p>
+              <p className="py-4 text-center text-sm text-slate-400">No students waiting</p>
             )}
           </div>
         </div>
 
         <div className="mt-6 flex gap-3">
-          {counter.status === "OPEN" ? (
+          {counterStatus === "OPEN" ? (
             <>
               <button
                 onClick={callNext}
-                disabled={
-                  loading ||
-                  waitingTokens.length === 0 ||
-                  !!currentToken
-                }
-                className="flex-1 rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white disabled:opacity-40"
+                disabled={loading || waitingTokens.length === 0 || !!currentToken}
+                className="flex-1 rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Call Next
               </button>
 
               <button
                 onClick={closeCounter}
-                disabled={loading}
-                className="rounded-xl border px-4 py-3 font-semibold"
+                disabled={loading || !!currentToken}
+                className="rounded-xl border px-4 py-3 font-semibold disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Close
               </button>
@@ -397,12 +386,18 @@ export default function StaffQueue({
             <button
               onClick={openCounter}
               disabled={loading}
-              className="w-full rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white"
+              className="w-full rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white disabled:opacity-40"
             >
               Open Counter
             </button>
           )}
         </div>
+
+        {counterStatus === "OPEN" && waitingTokens.length === 0 && !currentToken && (
+          <div className="mt-4 rounded-xl bg-green-50 p-3 text-center text-sm font-medium text-green-700">
+            Counter is open and the queue is clear.
+          </div>
+        )}
 
         {error && (
           <div className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-600">
@@ -412,4 +407,10 @@ export default function StaffQueue({
       </div>
     </div>
   );
+}
+
+function formatDuration(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
