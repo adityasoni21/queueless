@@ -6,6 +6,8 @@ interface Props {
   params: Promise<{ tokenId: string }>;
 }
 
+type Relation = { name?: string; location?: string | null } | null;
+
 export default async function CheckInPage({ params }: Props) {
   const { tokenId } = await params;
   const supabase = await createClient();
@@ -42,15 +44,14 @@ export default async function CheckInPage({ params }: Props) {
     );
   }
 
-  const serviceName = Array.isArray(token.services)
-    ? token.services[0]?.name
-    : token.services?.name;
-  const counterName = Array.isArray(token.counters)
-    ? token.counters[0]?.name
-    : token.counters?.name;
-  const counterLocation = Array.isArray(token.counters)
-    ? token.counters[0]?.location
-    : token.counters?.location;
+  const serviceRelation = token.services as unknown as Relation | Relation[];
+  const counterRelation = token.counters as unknown as Relation | Relation[];
+  const service = Array.isArray(serviceRelation)
+    ? serviceRelation[0]
+    : serviceRelation;
+  const counter = Array.isArray(counterRelation)
+    ? counterRelation[0]
+    : counterRelation;
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-50 px-6">
@@ -61,10 +62,12 @@ export default async function CheckInPage({ params }: Props) {
         <div className="mt-8 rounded-2xl bg-slate-50 p-6">
           <p className="text-sm text-slate-500">Token</p>
           <p className="mt-1 text-5xl font-black">{token.token_number}</p>
-          <p className="mt-3 font-medium">{serviceName}</p>
-          <p className="mt-1 text-sm text-slate-500">{counterName}</p>
-          {counterLocation && (
-            <p className="text-sm text-slate-400">{counterLocation}</p>
+          <p className="mt-3 font-medium">{service?.name ?? "Service"}</p>
+          <p className="mt-1 text-sm text-slate-500">
+            {counter?.name ?? "Counter"}
+          </p>
+          {counter?.location && (
+            <p className="text-sm text-slate-400">{counter.location}</p>
           )}
         </div>
 
