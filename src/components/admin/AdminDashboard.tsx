@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import LogoutButton from "@/components/auth/LogoutButton";
+import StaffManagement from "@/components/admin/StaffManagement";
 
 interface Props {
   profile: {
@@ -244,6 +245,8 @@ export default function AdminDashboard({ profile }: Props) {
             </div>
           </div>
         </section>
+
+        <StaffManagement />
       </div>
     </main>
   );
