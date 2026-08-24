@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -31,6 +32,7 @@ export default function LoginPage() {
       return;
     }
 
+    // Let the server-side role router decide where the user belongs.
     router.push("/dashboard");
     router.refresh();
   }
@@ -97,6 +99,16 @@ export default function LoginPage() {
             {loading ? "Signing in..." : "Sign in"}
           </button>
         </form>
+
+        <div className="mt-6 border-t pt-6 text-center text-sm text-slate-500">
+          Don&apos;t have a student account?{" "}
+          <Link
+            href="/signup"
+            className="font-semibold text-blue-600 hover:text-blue-700"
+          >
+            Sign up
+          </Link>
+        </div>
       </div>
     </main>
   );
