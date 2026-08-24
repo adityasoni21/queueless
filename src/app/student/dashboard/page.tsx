@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import LogoutButton from "@/components/auth/LogoutButton";
 
 export default async function StudentDashboard() {
   const supabase = await createClient();
@@ -40,14 +41,18 @@ export default async function StudentDashboard() {
             </h1>
           </div>
 
-          <div className="text-right">
-            <p className="font-medium">
-              {profile?.name ?? "Student"}
-            </p>
+          <div className="flex items-center gap-4">
+            <div className="text-right">
+              <p className="font-medium">
+                {profile?.name ?? "Student"}
+              </p>
 
-            <p className="text-sm text-slate-500">
-              {profile?.student_id}
-            </p>
+              <p className="text-sm text-slate-500">
+                {profile?.student_id}
+              </p>
+            </div>
+
+            <LogoutButton />
           </div>
         </div>
       </header>
