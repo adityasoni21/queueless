@@ -2,194 +2,39 @@ import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import JoinQueueButton from "@/components/queue/JoinQueueButton";
 
-interface ServicePageProps {
-  params: Promise<{
-    serviceId: string;
-  }>;
-}
+interface Props { params: Promise<{ serviceId: string }> }
 
-export default async function ServicePage({
-  params,
-}: ServicePageProps) {
+export default async function ServicePage({ params }: Props) {
   const { serviceId } = await params;
-
   const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { data: service } = await supabase.from("services").select("*").eq("id",serviceId).eq("is_active",true).single();
+  if (!service) notFound();
 
-  if (!user) {
-    redirect("/login");
-  }
+  const { data: counterServices } = await supabase.from("counter_services").select("counter_id,counters(id,name,location,status)").eq("service_id",serviceId);
+  const counters = (counterServices ?? []).map((item:any)=>item.counters).filter(Boolean);
 
-  const { data: service } = await supabase
-    .from("services")
-    .select("*")
-    .eq("id", serviceId)
-    .eq("is_active", true)
-    .single();
+  const counterData = await Promise.all(counters.map(async(counter:any)=>{
+    const { count } = await supabase.from("tokens").select("id",{count:"exact",head:true}).eq("counter_id",counter.id).in("status",["WAITING","CALLED","IN_SERVICE"]);
+    const waiting=count??0;
+    const eta=waiting*service.average_service_time;
+    return {...counter,waiting,eta};
+  }));
 
-  if (!service) {
-    notFound();
-  }
+  const openCounters=counterData.filter(c=>c.status==="OPEN");
+  const recommended=openCounters.slice().sort((a,b)=>a.eta-b.eta)[0]??null;
+  const totalWaiting=openCounters.reduce((sum,c)=>sum+c.waiting,0);
 
-  const { data: counterServices } = await supabase
-    .from("counter_services")
-    .select(`
-      counter_id,
-      counters (
-        id,
-        name,
-        location,
-        status
-      )
-    `)
-    .eq("service_id", serviceId);
-
-  const availableCounters =
-    counterServices?.filter(
-      (item: any) => item.counters?.status === "OPEN"
-    ) ?? [];
-
-  let totalWaiting = 0;
-
-  for (const counter of availableCounters) {
-    const counterId = (counter.counters as any).id;
-
-    const { count } = await supabase
-      .from("tokens")
-      .select("*", {
-        count: "exact",
-        head: true,
-      })
-      .eq("counter_id", counterId)
-      .in("status", ["WAITING", "CALLED", "IN_SERVICE"]);
-
-    totalWaiting += count ?? 0;
-  }
-
-  const estimatedWait =
-    totalWaiting * service.average_service_time;
-
-  return (
-    <main className="min-h-screen bg-slate-50">
-      <div className="mx-auto max-w-4xl px-6 py-10">
-        <a
-          href="/student/dashboard"
-          className="text-sm font-medium text-blue-600"
-        >
-          ← Back to services
-        </a>
-
-        <div className="mt-8 rounded-3xl bg-white p-8 shadow-sm">
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-sm font-semibold text-blue-600">
-                CampusQueue
-              </p>
-
-              <h1 className="mt-2 text-3xl font-bold">
-                {service.name}
-              </h1>
-
-              <p className="mt-3 text-slate-500">
-                {service.description}
-              </p>
-            </div>
-
-            <span
-              className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                availableCounters.length > 0
-                  ? "bg-green-50 text-green-700"
-                  : "bg-red-50 text-red-700"
-              }`}
-            >
-              {availableCounters.length > 0
-                ? "Open"
-                : "Closed"}
-            </span>
-          </div>
-
-          <div className="mt-8 grid gap-4 md:grid-cols-3">
-            <div className="rounded-2xl bg-slate-50 p-5">
-              <p className="text-sm text-slate-500">
-                People waiting
-              </p>
-
-              <p className="mt-1 text-3xl font-bold">
-                {totalWaiting}
-              </p>
-            </div>
-
-            <div className="rounded-2xl bg-slate-50 p-5">
-              <p className="text-sm text-slate-500">
-                Estimated wait
-              </p>
-
-              <p className="mt-1 text-3xl font-bold">
-                ~{estimatedWait} min
-              </p>
-            </div>
-
-            <div className="rounded-2xl bg-slate-50 p-5">
-              <p className="text-sm text-slate-500">
-                Avg. service
-              </p>
-
-              <p className="mt-1 text-3xl font-bold">
-                ~{service.average_service_time} min
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-8">
-            <h2 className="font-semibold">
-              Available counters
-            </h2>
-
-            <div className="mt-3 space-y-3">
-              {counterServices?.map((item: any) => {
-                const counter = item.counters;
-
-                return (
-                  <div
-                    key={counter.id}
-                    className="flex items-center justify-between rounded-2xl border p-4"
-                  >
-                    <div>
-                      <p className="font-medium">
-                        {counter.name}
-                      </p>
-
-                      <p className="text-sm text-slate-500">
-                        {counter.location}
-                      </p>
-                    </div>
-
-                    <span
-                      className={`text-sm font-medium ${
-                        counter.status === "OPEN"
-                          ? "text-green-600"
-                          : "text-slate-400"
-                      }`}
-                    >
-                      {counter.status}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="mt-8 border-t pt-8">
-            <JoinQueueButton
-              serviceId={service.id}
-              disabled={availableCounters.length === 0}
-            />
-          </div>
-        </div>
-      </div>
-    </main>
-  );
+  return <main className="min-h-screen bg-slate-50"><div className="mx-auto max-w-4xl px-6 py-10">
+    <a href="/student/dashboard" className="text-sm font-medium text-blue-600">← Back to services</a>
+    <div className="mt-8 rounded-3xl bg-white p-8 shadow-sm">
+      <div className="flex items-start justify-between gap-4"><div><p className="text-sm font-semibold text-blue-600">CampusQueue</p><h1 className="mt-2 text-3xl font-bold">{service.name}</h1><p className="mt-3 text-slate-500">{service.description}</p></div><span className={`rounded-full px-3 py-1 text-xs font-semibold ${openCounters.length?"bg-green-50 text-green-700":"bg-red-50 text-red-700"}`}>{openCounters.length?"Open":"Closed"}</span></div>
+      <div className="mt-8 grid gap-4 md:grid-cols-3"><div className="rounded-2xl bg-slate-50 p-5"><p className="text-sm text-slate-500">People waiting</p><p className="mt-1 text-3xl font-bold">{totalWaiting}</p></div><div className="rounded-2xl bg-slate-50 p-5"><p className="text-sm text-slate-500">Best ETA</p><p className="mt-1 text-3xl font-bold">~{recommended?.eta??0} min</p></div><div className="rounded-2xl bg-slate-50 p-5"><p className="text-sm text-slate-500">Avg. service</p><p className="mt-1 text-3xl font-bold">~{service.average_service_time} min</p></div></div>
+      {recommended&&<div className="mt-8 rounded-2xl border border-green-200 bg-green-50 p-5"><div className="flex items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-wide text-green-700">Recommended counter</p><p className="mt-1 text-xl font-bold text-green-900">{recommended.name}</p><p className="text-sm text-green-800">{recommended.location} · {recommended.waiting} active tokens ahead</p></div><div className="rounded-xl bg-white px-4 py-3 text-center shadow-sm"><p className="text-xs text-slate-400">ETA</p><p className="text-2xl font-black text-green-700">~{recommended.eta} min</p></div></div></div>}
+      <div className="mt-8"><h2 className="font-semibold">Available counters</h2><div className="mt-3 space-y-3">{counterData.map(counter=><div key={counter.id} className={`flex items-center justify-between rounded-2xl border p-4 ${recommended?.id===counter.id?"border-green-300 bg-green-50/50":""}`}><div><div className="flex items-center gap-2"><p className="font-medium">{counter.name}</p>{recommended?.id===counter.id&&<span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-bold text-green-700">BEST</span>}</div><p className="text-sm text-slate-500">{counter.location}</p></div><div className="text-right"><p className={`text-sm font-semibold ${counter.status==="OPEN"?"text-green-600":"text-slate-400"}`}>{counter.status}</p>{counter.status==="OPEN"&&<p className="text-xs text-slate-500">~{counter.eta} min · {counter.waiting} waiting</p>}</div></div>)}</div></div>
+      <div className="mt-8 border-t pt-8"><JoinQueueButton serviceId={service.id} disabled={openCounters.length===0}/></div>
+    </div>
+  </div></main>;
 }
