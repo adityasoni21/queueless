@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "CampusQueue",
+  title: "Queueless",
   description: "Smart campus queue management",
 };
 
